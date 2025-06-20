@@ -588,6 +588,11 @@
   const app = initializeApp(firebaseConfig);
          console.log("Firebase Initialized:", app);  // ✔️ Should log in console
   const analytics = getAnalytics(app);
+        // TEST: Sign in anonymously (no password needed)
+firebase.auth().signInAnonymously()
+    .then(() => console.log("✅ Signed in successfully!"))
+    .catch(err => console.error("❌ Auth Error:", err));
+
 </script>
 </body>
 </html>
