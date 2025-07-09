@@ -68,14 +68,19 @@ const signOut = (auth) => {
 // FIXED utility functions - RESOLVES FIREBASE PATH ERROR!
 const encodeEmail = (email) => {
   if (!email) return '';
+  console.log('🔧 ENCODING EMAIL:', email);
+  
   // Replace Firebase invalid characters with safe alternatives
-  return email
+  const encoded = email
     .replace(/\./g, '_dot_')      // Replace . with _dot_
     .replace(/@/g, '_at_')        // Replace @ with _at_  
     .replace(/#/g, '_hash_')      // Replace # with _hash_
     .replace(/\$/g, '_dollar_')   // Replace $ with _dollar_
     .replace(/\[/g, '_lbracket_') // Replace [ with _lbracket_
     .replace(/\]/g, '_rbracket_'); // Replace ] with _rbracket_
+  
+  console.log('✅ ENCODED RESULT:', encoded);
+  return encoded;
 };
 
 const createChatId = (email1, email2) => {
@@ -324,6 +329,13 @@ export default function InternalMessagingApp() {
   };
 
   const assignTask = (userEmail) => {
+    // DEBUG: Test the encodeEmail function
+    console.log('=== DEBUG TEST ===');
+    console.log('Original email:', userEmail);
+    console.log('Encoded email:', encodeEmail(userEmail));
+    console.log('Expected: sourabhsharma_dot_rias_at_gmail_dot_com');
+    console.log('=== END DEBUG ===');
+    
     const task = prompt(`Enter task for ${userEmail}`);
     if (!task || !task.trim()) return;
     
