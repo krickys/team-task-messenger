@@ -1,69 +1,25 @@
 import { useEffect, useState } from 'react';
+import { 
+  getDatabase, 
+  ref, 
+  set, 
+  update, 
+  onValue,
+  push
+} from 'firebase/database';
+import { 
+  getAuth, 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut,
+  onAuthStateChanged
+} from 'firebase/auth';
+// Import your Firebase app configuration
+import { app } from './firebase.js'; // Adjust path if needed
 
-// Mock Firebase functions for demonstration
-const mockDb = {
-  users: {},
-  groups: {},
-  chats: { private: {}, group: {} },
-  tasks: {}
-};
-
-const mockAuth = {
-  currentUser: null,
-  onAuthStateChanged: (callback) => {
-    // Mock auth state change
-    return () => {};
-  }
-};
-
-// Mock Firebase functions
-const ref = (db, path) => ({ path });
-const set = (ref, data) => {
-  const pathParts = ref.path.split('/');
-  let current = mockDb;
-  for (let i = 0; i < pathParts.length - 1; i++) {
-    if (!current[pathParts[i]]) current[pathParts[i]] = {};
-    current = current[pathParts[i]];
-  }
-  current[pathParts[pathParts.length - 1]] = data;
-  console.log('Set:', ref.path, data);
-};
-
-const update = (ref, data) => {
-  const pathParts = ref.path.split('/');
-  let current = mockDb;
-  for (let i = 0; i < pathParts.length - 1; i++) {
-    if (!current[pathParts[i]]) current[pathParts[i]] = {};
-    current = current[pathParts[i]];
-  }
-  Object.assign(current[pathParts[pathParts.length - 1]] || {}, data);
-  console.log('Update:', ref.path, data);
-};
-
-const onValue = (ref, callback) => {
-  // Mock real-time listener
-  const pathParts = ref.path.split('/');
-  let current = mockDb;
-  for (const part of pathParts) {
-    current = current[part];
-    if (!current) break;
-  }
-  
-  callback({ val: () => current });
-  return () => {};
-};
-
-const signInWithEmailAndPassword = (auth, email, password) => {
-  return Promise.resolve({ user: { email } });
-};
-
-const createUserWithEmailAndPassword = (auth, email, password) => {
-  return Promise.resolve({ user: { email } });
-};
-
-const signOut = (auth) => {
-  return Promise.resolve();
-};
+// Initialize Firebase services
+const database = getDatabase(app);
+const auth = getAuth(app);
 
 // FIXED utility functions - RESOLVES FIREBASE PATH ERROR!
 const encodeEmail = (email) => {
@@ -178,41 +134,55 @@ export default function InternalMessagingApp() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isRegistering, setIsRegistering] = useState(false);
-  const [activeTab, setActiveTab] = useState("chat"); // "chat" or "tasks"
+  const [activeTab, setActiveTab] = useState("chat");
   const [tasks, setTasks] = useState([]);
   const [editingTask, setEditingTask] = useState(null);
+  const [loading, setLoading] = useState(false);
 
   const currentUser = user?.email;
 
   // Authentication state listener
   useEffect(() => {
-    const unsubscribe = mockAuth.onAuthStateChanged(u => setUser(u));
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (u) {
+        console.log("✅ User authenticated:", u.email);
+      }
+    });
     return () => unsubscribe();
   }, []);
 
   // Users listener
   useEffect(() => {
     if (!currentUser) return;
-    const usersRef = ref(mockDb, "users");
-    return onValue(usersRef, snapshot => {
+    
+    const usersRef = ref(database, "users");
+    const unsubscribe = onValue(usersRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         const users = Object.values(data)
           .map(u => u.email)
           .filter(e => e !== currentUser);
         setAllUsers(users);
+        console.log("👥 Loaded users:", users);
       }
     });
+    return () => unsubscribe();
   }, [currentUser]);
 
   // Groups listener
   useEffect(() => {
     if (!currentUser) return;
-    const groupsRef = ref(mockDb, "groups");
-    return onValue(groupsRef, snapshot => {
+    
+    const groupsRef = ref(database, "groups");
+    const unsubscribe = onValue(groupsRef, (snapshot) => {
       const data = snapshot.val();
-      if (data) setGroups(data);
+      if (data) {
+        setGroups(data);
+        console.log("👥 Loaded groups:", Object.keys(data));
+      }
     });
+    return () => unsubscribe();
   }, [currentUser]);
 
   // Tasks listener
@@ -223,23 +193,25 @@ export default function InternalMessagingApp() {
     }
     
     const encodedSelectedChat = encodeEmail(selectedChat);
-    console.log('Tasks listener - encoded chat:', encodedSelectedChat);
+    console.log('📋 Tasks listener - encoded chat:', encodedSelectedChat);
     
-    const tasksRef = ref(mockDb, `tasks/${encodedSelectedChat}`);
-    return onValue(tasksRef, snapshot => {
+    const tasksRef = ref(database, `tasks/${encodedSelectedChat}`);
+    const unsubscribe = onValue(tasksRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         const taskArray = Object.entries(data)
           .map(([id, task]) => ({ id, ...task }))
           .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
         setTasks(taskArray);
+        console.log(`📋 Loaded ${taskArray.length} tasks for ${selectedChat}`);
       } else {
         setTasks([]);
       }
     });
+    return () => unsubscribe();
   }, [currentUser, selectedChat, chatType]);
 
-  // Fixed Messages listener with proper read receipts
+  // Messages listener
   useEffect(() => {
     if (!currentUser || !selectedChat) {
       setMessages([]);
@@ -250,9 +222,9 @@ export default function InternalMessagingApp() {
       ? `chats/private/${createChatId(currentUser, selectedChat)}`
       : `chats/group/${selectedChat}`;
 
-    const messagesRef = ref(mockDb, path);
+    const messagesRef = ref(database, path);
     
-    return onValue(messagesRef, snapshot => {
+    const unsubscribe = onValue(messagesRef, (snapshot) => {
       const data = snapshot.val();
       
       if (!data) {
@@ -260,7 +232,6 @@ export default function InternalMessagingApp() {
         return;
       }
 
-      // Convert to array and sort by timestamp
       const msgArray = Object.entries(data)
         .map(([id, msg]) => ({ id, ...msg }))
         .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
@@ -269,167 +240,224 @@ export default function InternalMessagingApp() {
       msgArray.forEach(msg => {
         if (msg.from !== currentUser && (!msg.readBy || !msg.readBy.includes(currentUser))) {
           const updatedReadBy = [...(msg.readBy || []), currentUser];
-          update(ref(mockDb, `${path}/${msg.id}`), {
+          const messageRef = ref(database, `${path}/${msg.id}`);
+          update(messageRef, {
             readBy: updatedReadBy
-          });
+          }).catch(console.error);
         }
       });
 
       setMessages(msgArray);
     });
+    return () => unsubscribe();
   }, [currentUser, selectedChat, chatType]);
 
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     if (!newMessage.trim() || !selectedChat || !currentUser) return;
     
-    const path = chatType === "private"
-      ? `chats/private/${createChatId(currentUser, selectedChat)}`
-      : `chats/group/${selectedChat}`;
+    setLoading(true);
+    try {
+      const path = chatType === "private"
+        ? `chats/private/${createChatId(currentUser, selectedChat)}`
+        : `chats/group/${selectedChat}`;
 
-    // Use timestamp for unique ID to avoid conflicts
-    const messageId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const timestamp = new Date().toISOString();
-    
-    const newEntry = {
-      from: currentUser,
-      text: newMessage.trim(),
-      timestamp: timestamp,
-      readBy: [currentUser],
-    };
-    
-    set(ref(mockDb, `${path}/${messageId}`), newEntry);
-    setNewMessage("");
+      const messagesRef = ref(database, path);
+      const timestamp = new Date().toISOString();
+      
+      const newEntry = {
+        from: currentUser,
+        text: newMessage.trim(),
+        timestamp: timestamp,
+        readBy: [currentUser],
+      };
+      
+      await push(messagesRef, newEntry);
+      setNewMessage("");
+      console.log("💬 Message sent successfully");
+    } catch (error) {
+      console.error("❌ Error sending message:", error);
+      alert("Failed to send message: " + error.message);
+    }
+    setLoading(false);
   };
 
-  const createGroup = () => {
+  const createGroup = async () => {
     const name = prompt("Enter group name");
     if (!name || !name.trim()) return;
     
-    // Create a more unique group ID
-    const id = `${name.toLowerCase().replace(/\s+/g, "-")}_${Date.now()}`;
-    set(ref(mockDb, `groups/${id}`), { 
-      name: name.trim(), 
-      admin: currentUser, 
-      members: [currentUser] 
-    });
-  };
-
-  const promoteToAdmin = (groupId, userEmail) => {
-    if (groups[groupId]?.admin === currentUser) {
-      update(ref(mockDb, `groups/${groupId}`), { admin: userEmail });
+    setLoading(true);
+    try {
+      const id = `${name.toLowerCase().replace(/\s+/g, "-")}_${Date.now()}`;
+      const groupRef = ref(database, `groups/${id}`);
+      await set(groupRef, { 
+        name: name.trim(), 
+        admin: currentUser, 
+        members: [currentUser] 
+      });
+      console.log("👥 Group created:", name);
+    } catch (error) {
+      console.error("❌ Error creating group:", error);
+      alert("Failed to create group: " + error.message);
     }
+    setLoading(false);
   };
 
-  const removeMember = (groupId, member) => {
-    const group = groups[groupId];
-    if (group?.admin === currentUser && group.members) {
-      const filtered = group.members.filter(m => m !== member);
-      update(ref(mockDb, `groups/${groupId}`), { members: filtered });
-    }
-  };
-
-  const assignTask = (userEmail) => {
-    // DEBUG: Test the encodeEmail function
-    console.log('=== DEBUG TEST ===');
-    console.log('Original email:', userEmail);
-    console.log('Encoded email:', encodeEmail(userEmail));
-    console.log('Expected: sourabhsharma_dot_rias_at_gmail_dot_com');
-    console.log('=== END DEBUG ===');
+  const promoteToAdmin = async (groupId, userEmail) => {
+    if (groups[groupId]?.admin !== currentUser) return;
     
+    try {
+      const groupRef = ref(database, `groups/${groupId}`);
+      await update(groupRef, { admin: userEmail });
+      console.log("👑 Promoted to admin:", userEmail);
+    } catch (error) {
+      console.error("❌ Error promoting user:", error);
+      alert("Failed to promote user: " + error.message);
+    }
+  };
+
+  const removeMember = async (groupId, member) => {
+    const group = groups[groupId];
+    if (group?.admin !== currentUser || !group.members) return;
+    
+    try {
+      const filtered = group.members.filter(m => m !== member);
+      const groupRef = ref(database, `groups/${groupId}`);
+      await update(groupRef, { members: filtered });
+      console.log("🚫 Removed member:", member);
+    } catch (error) {
+      console.error("❌ Error removing member:", error);
+      alert("Failed to remove member: " + error.message);
+    }
+  };
+
+  const assignTask = async (userEmail) => {
     const task = prompt(`Enter task for ${userEmail}`);
     if (!task || !task.trim()) return;
     
-    const encodedUserEmail = encodeEmail(userEmail);
-    console.log('Assigning task - original email:', userEmail, 'encoded:', encodedUserEmail);
-    
-    const taskId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const taskData = {
-      task: task.trim(),
-      assignedBy: currentUser,
-      assignedTo: userEmail,
-      status: 'pending',
-      timestamp: new Date().toISOString(),
-      completedAt: null,
-      completedBy: null
-    };
-    
-    const taskPath = `tasks/${encodedUserEmail}/${taskId}`;
-    console.log('Task path:', taskPath);
-    
-    set(ref(mockDb, taskPath), taskData);
-    alert(`Task assigned to ${userEmail}`);
+    setLoading(true);
+    try {
+      const encodedUserEmail = encodeEmail(userEmail);
+      console.log('📋 Assigning task - original email:', userEmail, 'encoded:', encodedUserEmail);
+      
+      const taskData = {
+        task: task.trim(),
+        assignedBy: currentUser,
+        assignedTo: userEmail,
+        status: 'pending',
+        timestamp: new Date().toISOString(),
+        completedAt: null,
+        completedBy: null
+      };
+      
+      const tasksRef = ref(database, `tasks/${encodedUserEmail}`);
+      await push(tasksRef, taskData);
+      
+      console.log("✅ Task assigned successfully");
+      alert(`Task assigned to ${userEmail}`);
+    } catch (error) {
+      console.error("❌ Error assigning task:", error);
+      alert("Failed to assign task: " + error.message);
+    }
+    setLoading(false);
   };
 
-  const updateTaskStatus = (taskId, newStatus) => {
+  const updateTaskStatus = async (taskId, newStatus) => {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
 
-    const encodedSelectedChat = encodeEmail(selectedChat);
-    const updates = {
-      status: newStatus,
-      lastModified: new Date().toISOString(),
-      lastModifiedBy: currentUser
-    };
+    try {
+      const encodedSelectedChat = encodeEmail(selectedChat);
+      const updates = {
+        status: newStatus,
+        lastModified: new Date().toISOString(),
+        lastModifiedBy: currentUser
+      };
 
-    if (newStatus === 'completed') {
-      updates.completedAt = new Date().toISOString();
-      updates.completedBy = currentUser;
-    } else {
-      updates.completedAt = null;
-      updates.completedBy = null;
+      if (newStatus === 'completed') {
+        updates.completedAt = new Date().toISOString();
+        updates.completedBy = currentUser;
+      } else {
+        updates.completedAt = null;
+        updates.completedBy = null;
+      }
+
+      const taskRef = ref(database, `tasks/${encodedSelectedChat}/${taskId}`);
+      await update(taskRef, updates);
+      console.log("📋 Task status updated:", newStatus);
+    } catch (error) {
+      console.error("❌ Error updating task:", error);
+      alert("Failed to update task: " + error.message);
     }
-
-    update(ref(mockDb, `tasks/${encodedSelectedChat}/${taskId}`), updates);
   };
 
-  const editTask = (taskId, newTaskText) => {
+  const editTask = async (taskId, newTaskText) => {
     if (!newTaskText || !newTaskText.trim()) return;
 
-    const encodedSelectedChat = encodeEmail(selectedChat);
-    const updates = {
-      task: newTaskText.trim(),
-      lastModified: new Date().toISOString(),
-      lastModifiedBy: currentUser
-    };
-
-    update(ref(mockDb, `tasks/${encodedSelectedChat}/${taskId}`), updates);
-    setEditingTask(null);
-  };
-
-  const deleteTask = (taskId) => {
-    if (confirm('Are you sure you want to delete this task?')) {
+    try {
       const encodedSelectedChat = encodeEmail(selectedChat);
-      const taskRef = ref(mockDb, `tasks/${encodedSelectedChat}/${taskId}`);
-      set(taskRef, null);
+      const updates = {
+        task: newTaskText.trim(),
+        lastModified: new Date().toISOString(),
+        lastModifiedBy: currentUser
+      };
+
+      const taskRef = ref(database, `tasks/${encodedSelectedChat}/${taskId}`);
+      await update(taskRef, updates);
+      setEditingTask(null);
+      console.log("📝 Task edited successfully");
+    } catch (error) {
+      console.error("❌ Error editing task:", error);
+      alert("Failed to edit task: " + error.message);
     }
   };
 
-  const handleAuth = () => {
+  const deleteTask = async (taskId) => {
+    if (!confirm('Are you sure you want to delete this task?')) return;
+    
+    try {
+      const encodedSelectedChat = encodeEmail(selectedChat);
+      const taskRef = ref(database, `tasks/${encodedSelectedChat}/${taskId}`);
+      await set(taskRef, null);
+      console.log("🗑️ Task deleted successfully");
+    } catch (error) {
+      console.error("❌ Error deleting task:", error);
+      alert("Failed to delete task: " + error.message);
+    }
+  };
+
+  const handleAuth = async () => {
     if (!email || !password) return alert("Please fill in all fields");
     
-    if (isRegistering) {
-      createUserWithEmailAndPassword(mockAuth, email, password)
-        .then((cred) => {
-          set(ref(mockDb, `users/${encodeEmail(email)}`), { email });
-          setUser({ email });
-        })
-        .catch(err => alert(err.message));
-    } else {
-      signInWithEmailAndPassword(mockAuth, email, password)
-        .then(() => setUser({ email }))
-        .catch(err => alert(err.message));
+    setLoading(true);
+    try {
+      if (isRegistering) {
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        // Save user to database
+        const userRef = ref(database, `users/${encodeEmail(email)}`);
+        await set(userRef, { email });
+        console.log("✅ User registered:", email);
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+        console.log("✅ User signed in:", email);
+      }
+    } catch (error) {
+      console.error("❌ Auth error:", error);
+      alert(error.message);
     }
+    setLoading(false);
   };
 
-  // Handle logout
-  const handleLogout = () => {
-    signOut(mockAuth).then(() => {
-      setUser(null);
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
       setSelectedChat(null);
       setMessages([]);
       setEmail("");
       setPassword("");
-    });
+      console.log("👋 User signed out");
+    } catch (error) {
+      console.error("❌ Logout error:", error);
+    }
   };
 
   if (!user) {
@@ -448,10 +476,26 @@ export default function InternalMessagingApp() {
 
   return (
     <div style={{ display: 'flex', padding: 20, fontFamily: 'sans-serif', height: '100vh' }}>
-      {/* Sidebar */}
+      {loading && (
+        <div style={{ 
+          position: 'fixed', 
+          top: 10, 
+          right: 10, 
+          background: '#007bff', 
+          color: 'white', 
+          padding: '8px 16px', 
+          borderRadius: 4,
+          zIndex: 1000
+        }}>
+          Loading...
+        </div>
+      )}
+      
       <div style={{ width: 300, padding: 20, backgroundColor: '#f5f5f5', borderRadius: 12 }}>
         <h3 style={{ marginTop: 0 }}>{currentUser}</h3>
-        <button onClick={handleLogout} style={{ marginBottom: 20 }}>Logout</button>
+        <button onClick={handleLogout} style={{ marginBottom: 20 }} disabled={loading}>
+          Logout
+        </button>
 
         <h4>Private Chats</h4>
         {allUsers.map(user => (
@@ -475,6 +519,7 @@ export default function InternalMessagingApp() {
             <button 
               onClick={() => assignTask(user)} 
               style={{ fontSize: '0.75rem', marginTop: 2 }}
+              disabled={loading}
             >
               Assign Task
             </button>
@@ -483,7 +528,9 @@ export default function InternalMessagingApp() {
 
         <h4 style={{ marginTop: 20 }}>
           Groups 
-          <button onClick={createGroup} style={{ float: 'right' }}>＋</button>
+          <button onClick={createGroup} style={{ float: 'right' }} disabled={loading}>
+            ＋
+          </button>
         </h4>
         
         {Object.entries(groups).map(([id, group]) => (
@@ -518,7 +565,6 @@ export default function InternalMessagingApp() {
         ))}
       </div>
 
-      {/* Chat Area */}
       <div style={{ flex: 1, marginLeft: 20, display: 'flex', flexDirection: 'column' }}>
         <h3 style={{ marginTop: 0 }}>
           {selectedChat 
@@ -528,7 +574,6 @@ export default function InternalMessagingApp() {
             : 'Select a chat to start messaging'}
         </h3>
         
-        {/* Tab Navigation - Only show for private chats */}
         {selectedChat && chatType === 'private' && (
           <div style={{ 
             display: 'flex', 
@@ -565,7 +610,6 @@ export default function InternalMessagingApp() {
           </div>
         )}
         
-        {/* Chat Tab Content */}
         {(!selectedChat || chatType === 'group' || activeTab === 'chat') && (
           <>
             <div style={{ 
@@ -631,6 +675,7 @@ export default function InternalMessagingApp() {
                       handleSendMessage();
                     }
                   }}
+                  disabled={loading}
                 />
                 <button 
                   onClick={handleSendMessage} 
@@ -643,6 +688,7 @@ export default function InternalMessagingApp() {
                     border: 'none',
                     cursor: 'pointer'
                   }}
+                  disabled={loading}
                 >
                   Send
                 </button>
@@ -651,7 +697,6 @@ export default function InternalMessagingApp() {
           </>
         )}
         
-        {/* Tasks Tab Content */}
         {activeTab === 'tasks' && selectedChat && chatType === 'private' && (
           <div style={{ 
             height: 400, 
@@ -673,6 +718,7 @@ export default function InternalMessagingApp() {
                   borderRadius: 4,
                   cursor: 'pointer'
                 }}
+                disabled={loading}
               >
                 Assign New Task
               </button>
@@ -684,7 +730,6 @@ export default function InternalMessagingApp() {
               </div>
             ) : (
               <>
-                {/* Pending Tasks */}
                 <div style={{ marginBottom: 20 }}>
                   <h4 style={{ color: '#dc3545', marginBottom: 10 }}>
                     Pending Tasks ({tasks.filter(t => t.status === 'pending').length})
@@ -817,7 +862,6 @@ export default function InternalMessagingApp() {
                   ))}
                 </div>
 
-                {/* Completed Tasks */}
                 <div>
                   <h4 style={{ color: '#28a745', marginBottom: 10 }}>
                     Completed Tasks ({tasks.filter(t => t.status === 'completed').length})
